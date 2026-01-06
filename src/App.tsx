@@ -18,9 +18,9 @@ const App = () => {
           </div> */}
 
           {/* Section 2: useBatchedUpdates (New case) */}
-          {/* <div className="bg-white rounded-lg shadow-md p-6">
+          <div className="bg-white rounded-lg shadow-md p-6">
             <VirtualizedList height={600} itemHeight={60} />
-          </div> */}
+          </div>
 
           {/* Section 3: useBatchedState */}
           {/* <div className="bg-white rounded-lg shadow-md p-6">
@@ -33,9 +33,9 @@ const App = () => {
           </div> */}
 
           {/* Section 5: useBatchedCallback (Batching ở callback) */}
-          <div className="bg-white rounded-lg shadow-md p-6">
+          {/* <div className="bg-white rounded-lg shadow-md p-6">
             <VirtualizedListWithBatchedCallback height={600} itemHeight={60} />
-          </div>
+          </div> */}
         </div>
       </div>
     </div>

@@ -1,159 +1,174 @@
-import { useRef, useTransition, useEffect, useLayoutEffect, useCallback, useState } from 'react'
+import { useRef, useCallback, useEffect } from "react";
 
-export interface UseBatchedUpdatesOptions {
-  /**
-   * Maximum time to wait before flushing batched updates (ms)
-   * Default: 1000ms
-   */
-  maxBatchDelay?: number
-  /**
-   * Maximum number of updates to batch before forcing a flush
-   * Default: 50
-   */
-  maxBatchSize?: number
+export interface UseBatchUpdatesOptions<T> {
+  /** Delay in milliseconds before flushing the batch (default: 150ms) */
+  delay?: number;
+  /** Maximum delay in milliseconds before forcing a flush (default: 500ms) */
+  /** This ensures data is updated even if socket keeps sending updates continuously */
+  maxDelay?: number;
+  /** Maximum batch size before forcing a flush (default: 50) */
+  /** This prevents memory issues with very large batches */
+  maxBatchSize?: number;
+  /** Callback to process the batched items */
+  onFlush: (batch: T[]) => void;
+  /** Whether batching is enabled (default: true) */
+  enabled?: boolean;
 }
 
 /**
- * Hook that batches state updates using useTransition
- * Pattern similar to useDebounceValue - only receives state and options
- * Returns batched state and batched setter function
- * Update logic is handled externally through updater function
- * Automatically flushes after maxBatchDelay to ensure UI rerenders
+ * Hook to batch multiple updates together with debouncing
  * 
- * @template T - The type of state
+ * Useful for optimizing frequent updates (e.g., WebSocket events, rapid state changes)
+ * by grouping them into batches and processing them together.
  * 
- * @param value - State value (passed from outside, similar to useDebounceValue)
- * @param options - Configuration options for batching
+ * Features:
+ * - Debounce: Waits for delay ms before flushing (default: 150ms)
+ * - Maximum delay: Forces flush after maxDelay ms to ensure real-time updates (default: 500ms)
+ * - Maximum batch size: Forces flush when batch reaches maxBatchSize items (default: 50)
  * 
- * @returns Object containing:
- *   - value: Batched state value
- *   - setValue: Function to update state (update logic handled externally)
+ * This ensures:
+ * 1. Optimized batching when updates are frequent
+ * 2. Real-time updates even if socket keeps sending continuously
+ * 3. Memory safety by limiting batch size
  * 
  * @example
  * ```tsx
- * // State managed externally
- * const [items, setItems] = useState<DataItem[]>([])
+ * const { addToBatch } = useBatchUpdates({
+ *   delay: 150,
+ *   maxDelay: 500,  // Force flush after 500ms even if updates continue
+ *   maxBatchSize: 50,  // Force flush when batch reaches 50 items
+ *   onFlush: (items) => {
+ *     // Process all items at once
+ *     updateCache(items);
+ *   },
+ * });
  * 
- * // Hook only receives state from outside, similar to useDebounceValue
- * const { value: batchedItems, setValue: setBatchedItems } = useBatchedUpdates(items, {
- *   maxBatchDelay: 5000,
- *   maxBatchSize: 50
- * })
- * 
- * // Update logic handled externally
- * setBatchedItems(prev => {
- *   return [...prev, newItem]
- * })
+ * // Add items to batch
+ * addToBatch(newItem);
  * ```
  */
-export function useBatchedUpdates<T>(
-  value: T,
-  options: UseBatchedUpdatesOptions = {}
-): {
-  value: T
-  setValue: (updater: (prevState: T) => T) => void
-} {
-  const { maxBatchDelay = 1000, maxBatchSize = 50 } = options
+export const useBatchedUpdates = <T>({
+  delay = 150,
+  maxDelay = 500,
+  maxBatchSize = 50,
+  onFlush,
+  enabled = true,
+}: UseBatchUpdatesOptions<T>) => {
+  const batchQueueRef = useRef<T[]>([]);
+  const batchTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const maxDelayTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const batchStartTimeRef = useRef<number | null>(null);
 
-  const [batchedValue, setBatchedValue] = useState<T>(value)
-  const [, startTransition] = useTransition()
-
-  // Use refs to store pending updaters and timeout
-  const pendingUpdatersRef = useRef<Array<(prevState: T) => T>>([])
-  const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const startTransitionRef = useRef(startTransition)
-  const valueRef = useRef(value)
-
-  // Sync with external value when value changes (similar to useDebounceValue)
-  // Use timeout to debounce sync, avoid calling setState in effect
-  useEffect(() => {
-    valueRef.current = value
+  // Flush the current batch
+  const flushBatch = useCallback(() => {
+    if (!enabled) return;
     
-    // Only sync if there are no pending updates
-    if (pendingUpdatersRef.current.length === 0) {
-      const id = setTimeout(() => {
-        if (pendingUpdatersRef.current.length === 0) {
-          setBatchedValue(valueRef.current)
-        }
-      }, 0)
+    const batch = batchQueueRef.current;
+    if (batch.length === 0) return;
+
+    // Clear queue immediately to prevent duplicate processing
+    batchQueueRef.current = [];
+    
+    // Reset batch start time
+    batchStartTimeRef.current = null;
+
+    // Clear all timeouts
+    if (batchTimeoutRef.current) {
+      clearTimeout(batchTimeoutRef.current);
+      batchTimeoutRef.current = null;
+    }
+    if (maxDelayTimeoutRef.current) {
+      clearTimeout(maxDelayTimeoutRef.current);
+      maxDelayTimeoutRef.current = null;
+    }
+
+    // Process the batch
+    onFlush(batch);
+  }, [enabled, onFlush]);
+
+  // Schedule batch flush with debounce
+  const scheduleBatchFlush = useCallback(() => {
+    if (!enabled) return;
+    
+    // Clear existing debounce timeout
+    if (batchTimeoutRef.current) {
+      clearTimeout(batchTimeoutRef.current);
+    }
+    
+    // Schedule normal debounce flush
+    batchTimeoutRef.current = setTimeout(() => {
+      flushBatch();
+    }, delay);
+    
+    // Schedule maximum delay flush if not already scheduled
+    // This ensures data is updated even if socket keeps sending updates continuously
+    if (!maxDelayTimeoutRef.current && batchStartTimeRef.current !== null) {
+      const elapsed = Date.now() - batchStartTimeRef.current;
+      const remainingDelay = Math.max(0, maxDelay - elapsed);
       
-      return () => clearTimeout(id)
+      if (remainingDelay > 0) {
+        maxDelayTimeoutRef.current = setTimeout(() => {
+          // Check if batch still has items before flushing
+          if (batchQueueRef.current.length > 0) {
+            flushBatch();
+          } else {
+            maxDelayTimeoutRef.current = null;
+          }
+        }, remainingDelay);
+      } else {
+        // If maxDelay has already passed, flush immediately
+        flushBatch();
+      }
     }
-  }, [value])
+  }, [enabled, delay, maxDelay, flushBatch]);
 
-  // Keep refs up to date using useLayoutEffect (runs synchronously after render)
-  useLayoutEffect(() => {
-    startTransitionRef.current = startTransition
-  })
-
-  const flushUpdates = useCallback(() => {
-    if (pendingUpdatersRef.current.length === 0) return
-
-    const updaters = pendingUpdatersRef.current
-    pendingUpdatersRef.current = []
-
-    if (timeoutRef.current) {
-      clearTimeout(timeoutRef.current)
-      timeoutRef.current = null
-    }
-
-    // Apply all pending updates and force rerender
-    startTransitionRef.current(() => {
-      setBatchedValue((prevState) => {
-        let newState = prevState
-        // Apply all updater functions from outside
-        for (const updater of updaters) {
-          newState = updater(newState)
-        }
-        return newState
-      })
-    })
-  }, [])
-
-  const batchedSetValue = useCallback(
-    (updater: (prevState: T) => T) => {
-      // Store updater function from outside
-      pendingUpdatersRef.current.push(updater)
-
-      // Clear existing timeout if it exists
-      if (timeoutRef.current) {
-        clearTimeout(timeoutRef.current)
-        timeoutRef.current = null
+  // Add item to batch queue
+  const addToBatch = useCallback(
+    (item: T) => {
+      if (!enabled) {
+        // If disabled, process immediately
+        onFlush([item]);
+        return;
       }
 
-      // Flush if batch is too large, but defer to avoid calling startTransition during render
-      if (pendingUpdatersRef.current.length >= maxBatchSize) {
-        timeoutRef.current = setTimeout(() => {
-          flushUpdates()
-        }, 0)
-        return
+      // Track batch start time for maxDelay calculation (only for first item in batch)
+      const isFirstItemInBatch = batchStartTimeRef.current === null;
+      if (isFirstItemInBatch) {
+        batchStartTimeRef.current = Date.now();
       }
 
-      // Schedule flush after maxBatchDelay to ensure rerender
-      // Create new timeout if one doesn't exist
-      if (timeoutRef.current === null) {
-        timeoutRef.current = setTimeout(() => {
-          flushUpdates()
-        }, maxBatchDelay)
+      batchQueueRef.current.push(item);
+
+      // Force flush if batch size exceeds maximum
+      if (batchQueueRef.current.length >= maxBatchSize) {
+        flushBatch();
+        return;
       }
+
+      scheduleBatchFlush();
     },
-    [maxBatchSize, maxBatchDelay, flushUpdates]
-  )
+    [enabled, maxBatchSize, scheduleBatchFlush, onFlush, flushBatch]
+  );
 
-  // Cleanup on unmount
+  // Cleanup timeout and flush remaining batch on unmount
   useEffect(() => {
     return () => {
-      if (timeoutRef.current) {
-        clearTimeout(timeoutRef.current)
+      if (batchTimeoutRef.current) {
+        clearTimeout(batchTimeoutRef.current);
       }
-      // Flush any pending updates on unmount
-      flushUpdates()
-    }
-  }, [flushUpdates])
+      if (maxDelayTimeoutRef.current) {
+        clearTimeout(maxDelayTimeoutRef.current);
+      }
+      // Flush remaining batch before unmount
+      if (batchQueueRef.current.length > 0) {
+        flushBatch();
+      }
+    };
+  }, [flushBatch]);
 
   return {
-    value: batchedValue,
-    setValue: batchedSetValue,
-  }
-}
+    addToBatch,
+    flushBatch,
+  };
+};
 
