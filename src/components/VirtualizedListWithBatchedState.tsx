@@ -1,8 +1,8 @@
-import { useRef, memo, useEffect, useMemo, useState } from 'react'
+import { useRef, memo, useEffect, useMemo } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { FakeSocket } from '../utils/fakeSocket'
 import type { DataItem } from '../types'
-import { useBatchedUpdates } from '../hooks/useBatchedUpdates'
+import { useBatchedState } from '../hooks/useBatchedState'
 
 interface VirtualizedListProps {
   height?: number
@@ -67,15 +67,12 @@ const VirtualItem = memo(({ item, virtualItem }: VirtualItemProps) => {
 
 VirtualItem.displayName = 'VirtualItem'
 
-const VirtualizedList = ({ height = 600, itemHeight = 50 }: VirtualizedListProps) => {
+const VirtualizedListWithBatchedState = ({ height = 600, itemHeight = 50 }: VirtualizedListProps) => {
   const parentRef = useRef<HTMLDivElement>(null)
   const socket = useMemo(() => new FakeSocket(), [])
 
-  // State managed externally, only pass state to hook (similar to useDebounceValue)
-  const [items, setItems] = useState<DataItem[]>([])
-
-  // Hook only receives state from outside, returns batched state and setter (pattern similar to useDebounceValue)
-  const { value: batchedItems, setValue: setBatchedItems } = useBatchedUpdates(items, {
+  // Use useBatchedState - state managed inside hook
+  const { state: items, setState, isPending } = useBatchedState<DataItem[]>([], {
     maxBatchDelay: 5000, // Batch updates for 5 seconds
     maxBatchSize: 50, // Flush after 50 updates
   })
@@ -83,18 +80,14 @@ const VirtualizedList = ({ height = 600, itemHeight = 50 }: VirtualizedListProps
   useEffect(() => {
     // Subscribe to push events - update logic handled externally
     const unsubscribePush = socket.onPush((item) => {
-      // Update external state immediately
-      setItems((prevItems) => {
-        const newItems = [...prevItems, item]
-        // Hook will automatically batch rendering
-        setBatchedItems(() => newItems)
-        return newItems
+      setState((prevItems) => {
+        return [...prevItems, item]
       })
     })
 
     // Subscribe to update events - update logic handled externally
     const unsubscribeUpdate = socket.onUpdate((updatedItem) => {
-      setItems((prevItems) => {
+      setState((prevItems) => {
         const index = prevItems.findIndex((item) => item.id === updatedItem.id)
         if (index === -1) return prevItems
 
@@ -107,8 +100,6 @@ const VirtualizedList = ({ height = 600, itemHeight = 50 }: VirtualizedListProps
         ) {
           const newItems = [...prevItems]
           newItems[index] = updatedItem
-          // Hook will automatically batch rendering
-          setBatchedItems(() => newItems)
           return newItems
         }
 
@@ -120,13 +111,12 @@ const VirtualizedList = ({ height = 600, itemHeight = 50 }: VirtualizedListProps
       unsubscribePush()
       unsubscribeUpdate()
     }
-  }, [socket, setBatchedItems, setItems])
+  }, [socket, setState])
 
   // Sort items by ID in descending order (highest ID first)
-  // Use batchedItems instead of items for rendering
   const sortedItems = useMemo(() => {
-    return [...batchedItems].sort((a, b) => b.id - a.id)
-  }, [batchedItems])
+    return [...items].sort((a, b) => b.id - a.id)
+  }, [items])
 
   // Virtualizer will automatically handle updates efficiently
   const virtualizer = useVirtualizer({
@@ -139,9 +129,14 @@ const VirtualizedList = ({ height = 600, itemHeight = 50 }: VirtualizedListProps
   return (
     <div className="w-full">
       <div className="mb-4 p-4 bg-gray-50 rounded-lg">
-        <h2 className="text-xl font-bold mb-2">Virtualized List (Option 3: useBatchedUpdates)</h2>
-        <p className="text-sm text-gray-600">Total items: {batchedItems.length}</p>
-        <p className="text-xs text-gray-500 mt-1">Pattern similar to useDebounceValue - only receives state, returns batched state</p>
+        <h2 className="text-xl font-bold mb-2">Virtualized List (useBatchedState)</h2>
+        <p className="text-sm text-gray-600">Total items: {items.length}</p>
+        <p className="text-xs text-gray-500 mt-1">
+          State managed inside hook, update logic handled externally through updater function
+        </p>
+        {isPending && (
+          <p className="text-xs text-blue-600 mt-1 font-medium">Pending updates...</p>
+        )}
       </div>
       <div
         ref={parentRef}
@@ -166,4 +161,5 @@ const VirtualizedList = ({ height = 600, itemHeight = 50 }: VirtualizedListProps
   )
 }
 
-export default VirtualizedList
+export default VirtualizedListWithBatchedState
+

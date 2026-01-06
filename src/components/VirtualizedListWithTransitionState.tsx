@@ -1,8 +1,8 @@
-import { useRef, memo, useEffect, useMemo, useState } from 'react'
+import { useRef, memo, useEffect, useMemo } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { FakeSocket } from '../utils/fakeSocket'
 import type { DataItem } from '../types'
-import { useBatchedUpdates } from '../hooks/useBatchedUpdates'
+import { useTransitionState } from '../hooks/useTransitionState'
 
 interface VirtualizedListProps {
   height?: number
@@ -67,66 +67,68 @@ const VirtualItem = memo(({ item, virtualItem }: VirtualItemProps) => {
 
 VirtualItem.displayName = 'VirtualItem'
 
-const VirtualizedList = ({ height = 600, itemHeight = 50 }: VirtualizedListProps) => {
+type UpdateAction = { type: 'PUSH' | 'UPDATE'; item: DataItem }
+
+const VirtualizedListWithTransitionState = ({ height = 600, itemHeight = 50 }: VirtualizedListProps) => {
   const parentRef = useRef<HTMLDivElement>(null)
   const socket = useMemo(() => new FakeSocket(), [])
 
-  // State managed externally, only pass state to hook (similar to useDebounceValue)
-  const [items, setItems] = useState<DataItem[]>([])
+  // Use custom hook with update logic passed from outside
+  const { state: items, scheduleUpdate } = useTransitionState<DataItem[], UpdateAction>(
+    [], // Initial data
+    (currentItems, updates) => {
+      // Update logic passed from outside
+      let newItems = [...currentItems]
 
-  // Hook only receives state from outside, returns batched state and setter (pattern similar to useDebounceValue)
-  const { value: batchedItems, setValue: setBatchedItems } = useBatchedUpdates(items, {
-    maxBatchDelay: 5000, // Batch updates for 5 seconds
-    maxBatchSize: 50, // Flush after 50 updates
-  })
+      for (const update of updates) {
+        if (update.type === 'PUSH') {
+          newItems = [...newItems, update.item]
+        } else if (update.type === 'UPDATE') {
+          const index = newItems.findIndex((item) => item.id === update.item.id)
+          if (index !== -1) {
+            const existingItem = newItems[index]
+            // Only update if the item actually changed
+            if (
+              existingItem.value !== update.item.value ||
+              existingItem.status !== update.item.status ||
+              existingItem.timestamp !== update.item.timestamp
+            ) {
+              newItems = [...newItems]
+              newItems[index] = update.item
+            }
+          }
+        }
+      }
+
+      return newItems
+    },
+    {
+      maxBatchDelay: 5000, // Batch updates for 5 seconds
+      maxBatchSize: 50, // Flush after 50 updates
+    }
+  )
 
   useEffect(() => {
-    // Subscribe to push events - update logic handled externally
+    // Subscribe to push events
     const unsubscribePush = socket.onPush((item) => {
-      // Update external state immediately
-      setItems((prevItems) => {
-        const newItems = [...prevItems, item]
-        // Hook will automatically batch rendering
-        setBatchedItems(() => newItems)
-        return newItems
-      })
+      scheduleUpdate({ type: 'PUSH', item })
     })
 
-    // Subscribe to update events - update logic handled externally
+    // Subscribe to update events
     const unsubscribeUpdate = socket.onUpdate((updatedItem) => {
-      setItems((prevItems) => {
-        const index = prevItems.findIndex((item) => item.id === updatedItem.id)
-        if (index === -1) return prevItems
-
-        const existingItem = prevItems[index]
-        // Only update if the item actually changed
-        if (
-          existingItem.value !== updatedItem.value ||
-          existingItem.status !== updatedItem.status ||
-          existingItem.timestamp !== updatedItem.timestamp
-        ) {
-          const newItems = [...prevItems]
-          newItems[index] = updatedItem
-          // Hook will automatically batch rendering
-          setBatchedItems(() => newItems)
-          return newItems
-        }
-
-        return prevItems
-      })
+      scheduleUpdate({ type: 'UPDATE', item: updatedItem })
     })
 
     return () => {
       unsubscribePush()
       unsubscribeUpdate()
     }
-  }, [socket, setBatchedItems, setItems])
+  }, [socket, scheduleUpdate])
 
   // Sort items by ID in descending order (highest ID first)
-  // Use batchedItems instead of items for rendering
   const sortedItems = useMemo(() => {
-    return [...batchedItems].sort((a, b) => b.id - a.id)
-  }, [batchedItems])
+    return [...items].sort((a, b) => b.id - a.id)
+  }, [items])
 
   // Virtualizer will automatically handle updates efficiently
   const virtualizer = useVirtualizer({
@@ -139,9 +141,9 @@ const VirtualizedList = ({ height = 600, itemHeight = 50 }: VirtualizedListProps
   return (
     <div className="w-full">
       <div className="mb-4 p-4 bg-gray-50 rounded-lg">
-        <h2 className="text-xl font-bold mb-2">Virtualized List (Option 3: useBatchedUpdates)</h2>
-        <p className="text-sm text-gray-600">Total items: {batchedItems.length}</p>
-        <p className="text-xs text-gray-500 mt-1">Pattern similar to useDebounceValue - only receives state, returns batched state</p>
+        <h2 className="text-xl font-bold mb-2">Virtualized List (useTransitionState)</h2>
+        <p className="text-sm text-gray-600">Total items: {items.length}</p>
+        <p className="text-xs text-gray-500 mt-1">Update logic is passed to hook through reducer function</p>
       </div>
       <div
         ref={parentRef}
@@ -166,4 +168,5 @@ const VirtualizedList = ({ height = 600, itemHeight = 50 }: VirtualizedListProps
   )
 }
 
-export default VirtualizedList
+export default VirtualizedListWithTransitionState
+
