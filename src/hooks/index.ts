@@ -3,4 +3,8 @@ export type { UseBatchedUpdatesOptions } from './useBatchedState'
 export { useBatchedUpdates } from './useBatchedUpdates'
 export { useTransitionState } from './useTransitionState'
 export type { UseTransitionStateOptions } from './useTransitionState'
+export { useBatchedQueryData } from './useBatchedQueryData'
+export type { UseBatchedQueryDataOptions } from './useBatchedQueryData'
+export { useBatchedCallback } from './useBatchedCallback'
+export type { UseBatchedCallbackOptions } from './useBatchedCallback'
 

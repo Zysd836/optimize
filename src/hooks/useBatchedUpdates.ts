@@ -115,9 +115,17 @@ export function useBatchedUpdates<T>(
       // Store updater function from outside
       pendingUpdatersRef.current.push(updater)
 
-      // Flush immediately if batch is too large
+      // Clear existing timeout if it exists
+      if (timeoutRef.current) {
+        clearTimeout(timeoutRef.current)
+        timeoutRef.current = null
+      }
+
+      // Flush if batch is too large, but defer to avoid calling startTransition during render
       if (pendingUpdatersRef.current.length >= maxBatchSize) {
-        flushUpdates()
+        timeoutRef.current = setTimeout(() => {
+          flushUpdates()
+        }, 0)
         return
       }
 
